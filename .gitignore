@@ -1,0 +1,30 @@
+# Unity klasörleri — tracking gerekmez
+[Ll]ibrary/
+[Tt]emp/
+[Oo]bj/
+[Ll]ogs/
+[Bb]uild/
+[Bb]uilds/
+[Uu]ser[Ss]ettings/
+
+# VS / IDE
+.vs/
+.vscode/
+*.csproj
+*.sln
+*.suo
+*.user
+*.pidb
+*.booproj
+
+# Unity tarafından üretilen meta olmayan dosyalar
+*.unityproj
+*.userprefs
+
+# Crash raporları
+sysinfo.txt
+crashlytics-build.properties
+
+# OS
+.DS_Store
+Thumbs.db
