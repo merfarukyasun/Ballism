@@ -4,15 +4,15 @@ using UnityEngine.InputSystem;
 
 public enum GameState
 {
-    Drawing,        // Oyuncu hücre çiziyor
-    SpawnSelect,    // Spawn noktası / yön seçiliyor
-    Simulating,     // Top(lar) hareket ediyor
+    Drawing,        // Oyuncu kenar çiziyor
+    RegionSelect,   // Kapalı bölgeler gösterildi, oyuncu birini seçiyor
+    SpawnSelect,    // Top yerleştirme (max 3, köşe tabanlı)
+    Simulating,     // Toplar hareket ediyor
     Paused          // Durduruldu
 }
 
 /// <summary>
-/// Oyun durumu yönetimi, top spawn, yön seçimi göstergeleri.
-/// UIManager buradaki public metodları çağırır.
+/// Oyun durumu, köşe tabanlı top spawn (Faz 2.5), çarpışma tespiti.
 /// </summary>
 public class GameManager : MonoBehaviour
 {
@@ -20,31 +20,30 @@ public class GameManager : MonoBehaviour
 
     [Header("Prefabs")]
     public GameObject ballPrefab;
-    public GameObject dirIndicatorPrefab; // Küçük yön göstergesi
+    public GameObject dirIndicatorPrefab;
 
-    [Header("Settings")]
+    [Header("Ayarlar")]
     public float ballSpeed = 4f;
-    public int   maxBalls  = 1; // TEST: geçici olarak 1
+    public int   maxBalls  = 3;
 
-    [Header("Ball Colors")]
+    [Header("Top Renkleri")]
     public Color[] ballColors =
     {
-        new Color(1f, 0.92f, 0.2f),
-        new Color(1f, 0.35f, 0.35f),
-        new Color(0.35f, 1f, 0.9f)
+        new Color(0f,   0.90f, 1.0f),  // #1 turkuaz
+        new Color(1f,   0.82f, 0.0f),  // #2 sarı
+        new Color(1f,   0.40f, 0.1f),  // #3 turuncu
     };
 
-    // --- State ---
-    GameState state;
+    // -----------------------------------------------------------------------
+    GameState            state;
     List<BallController> balls         = new List<BallController>();
     List<GameObject>     dirIndicators = new List<GameObject>();
 
-    Vector2Int pendingCell;
-    bool       hasPendingCell;
+    Vector2Int pendingSpawn;  // köşe koordinatı (corner space)
+    bool       hasPending;
 
     public GameState State     => state;
     public int       BallCount => balls.Count;
-
     public System.Action<GameState> OnStateChanged;
 
     // -----------------------------------------------------------------------
@@ -52,18 +51,30 @@ public class GameManager : MonoBehaviour
     void Start()  => SetState(GameState.Drawing);
 
     // -----------------------------------------------------------------------
-    // UIManager → GameManager köprüsü
+    // UIManager → GameManager
     // -----------------------------------------------------------------------
 
-    /// <summary>Çizim tamamlandı, spawn moduna geç.</summary>
     public void OnConfirmShape()
     {
         if (state != GameState.Drawing) return;
-        if (!GridManager.Instance.HasSelection()) return;
-        SetState(GameState.SpawnSelect);
+        var regions = GridManager.Instance.ComputeRegions();
+        if (regions.Count == 0)
+        {
+            Debug.Log("[GM] Kapalı bölge yok. Kenarları birleştirerek kapalı alan oluştur.");
+            return;
+        }
+        GridManager.Instance.ShowRegionPreviews();
+        SetState(GameState.RegionSelect);
     }
 
-    /// <summary>Simülasyon sırasında ekstra top ekle.</summary>
+    /// <summary>Tüm toplar yerleştirildikten sonra simülasyonu başlatır.</summary>
+    public void OnStartSimulation()
+    {
+        if (state != GameState.SpawnSelect) return;
+        if (balls.Count == 0) return;
+        SetState(GameState.Simulating);
+    }
+
     public void OnAddBall()
     {
         if (state != GameState.Simulating && state != GameState.Paused) return;
@@ -71,187 +82,204 @@ public class GameManager : MonoBehaviour
         SetState(GameState.SpawnSelect);
     }
 
-    /// <summary>Duraklat / Devam et.</summary>
     public void OnTogglePause()
     {
         if (state == GameState.Simulating) SetState(GameState.Paused);
         else if (state == GameState.Paused) SetState(GameState.Simulating);
     }
 
-    /// <summary>Her şeyi sıfırla.</summary>
     public void OnReset()
     {
         ClearBalls();
-        ClearDirIndicators();
+        ClearIndicators();
         GridManager.Instance.Clear();
-        hasPendingCell = false;
+        hasPending = false;
         SetState(GameState.Drawing);
     }
 
     public void OnClearShape()
     {
-        if (state == GameState.Drawing)
-            GridManager.Instance.Clear();
+        if (state == GameState.Drawing) GridManager.Instance.Clear();
     }
 
     // -----------------------------------------------------------------------
-    // Yön seçimi (DirectionIndicator bileşeni bu metodu çağırır)
+    // Yön seçimi (DirectionIndicator tıklandığında çağrılır)
     // -----------------------------------------------------------------------
 
     public void OnDirectionSelected(Vector2Int dir)
     {
-        if (!hasPendingCell) return;
-
-        SpawnBall(pendingCell, dir);
-        ClearDirIndicators();
-        hasPendingCell = false;
-
-        if (balls.Count > 0)
-            SetState(GameState.Simulating);
+        if (!hasPending) return;
+        SpawnBall(pendingSpawn, dir);
+        ClearIndicators();
+        hasPending = false;
+        OnStateChanged?.Invoke(state); // Başlat butonu görünürlüğünü güncelle
     }
 
     // -----------------------------------------------------------------------
-    // Input — SpawnSelect modunda hücre tıklaması
+    // Input
     // -----------------------------------------------------------------------
 
     void Update()
     {
-        if (state != GameState.SpawnSelect) return;
-
         var mouse = Mouse.current;
-        if (mouse == null || !mouse.leftButton.wasPressedThisFrame) return;
+        if (mouse == null) return;
 
-        Vector2 screenPos = mouse.position.ReadValue();
-        var worldPos      = Camera.main.ScreenToWorldPoint(new Vector3(screenPos.x, screenPos.y, 0f));
-
-        foreach (var ind in dirIndicators)
+        // ---- RegionSelect: hover her kare; tıkla → seç ----
+        if (state == GameState.RegionSelect)
         {
-            if (ind == null) continue;
-            if (Vector2.Distance(worldPos, ind.transform.position) < cellWorldRadius)
+            Vector3    world = ScreenToWorld(mouse.position.ReadValue());
+            Vector2Int cell  = GridManager.Instance.WorldToGrid(world);
+
+            GridManager.Instance.HoverRegionAtCell(cell.x, cell.y);
+
+            if (mouse.leftButton.wasPressedThisFrame &&
+                GridManager.Instance.SelectRegionAtCell(cell.x, cell.y))
             {
-                // OnMouseDown yeni Input System ile çalışmaz; tıklamayı burada işle
-                var di = ind.GetComponent<DirectionIndicator>();
-                if (di != null) OnDirectionSelected(di.direction);
-                return;
+                SetState(GameState.SpawnSelect);
             }
+            return;
         }
 
-        // Yeni bir spawn hücresi seç
-        var cell = GridManager.Instance.WorldToGrid(worldPos);
-        if (GridManager.Instance.IsSelected(cell.x, cell.y))
-            ShowDirIndicators(cell);
-    }
-
-    const float cellWorldRadius = 0.35f;
-
-    // -----------------------------------------------------------------------
-    // Yön Göstergeleri
-    // -----------------------------------------------------------------------
-
-    void ShowDirIndicators(Vector2Int cell)
-    {
-        ClearDirIndicators();
-        pendingCell    = cell;
-        hasPendingCell = true;
-
-        var dirs = new Vector2Int[]
+        // ---- SpawnSelect: köşeye tıkla → yön göstergeleri; oka tıkla → top ----
+        if (state == GameState.SpawnSelect)
         {
-            new( 1,  1),
-            new( 1, -1),
-            new(-1,  1),
-            new(-1, -1)
-        };
+            if (!mouse.leftButton.wasPressedThisFrame) return;
 
-        var cellCenter = GridManager.Instance.GridToWorld(cell.x, cell.y);
+            Vector3 world = ScreenToWorld(mouse.position.ReadValue());
 
-        foreach (var d in dirs)
-        {
-            // Yalnızca o yönde geçerli hücre varsa göster
-            Vector2Int neighbor = cell + d;
-            if (!GridManager.Instance.IsSelected(neighbor.x, neighbor.y)) continue;
-
-            // Göstergeyi hücre merkezi ile hedef arasına yerleştir
-            var indicatorPos = cellCenter + new Vector3(d.x * 0.55f, d.y * 0.55f, -0.5f);
-
-            var go = Instantiate(dirIndicatorPrefab, indicatorPos, Quaternion.identity);
-            go.name = $"DirInd_{d.x}_{d.y}";
-
-            // DirectionIndicator bileşenini ekle
-            var di = go.AddComponent<DirectionIndicator>();
-            di.direction = d;
-
-            // Collider2D gerekli (OnMouseDown için)
-            if (go.GetComponent<Collider2D>() == null)
+            // Önce yön göstergelerine bak
+            foreach (var ind in dirIndicators)
             {
-                var col = go.AddComponent<CircleCollider2D>();
-                col.radius = 0.28f;
-            }
-
-            var sr = go.GetComponent<SpriteRenderer>();
-            if (sr) sr.color = new Color(1f, 0.9f, 0.3f, 0.85f);
-
-            dirIndicators.Add(go);
-        }
-
-        // Seçilen hücrede hiç geçerli yön yoksa (çok küçük şekil) tüm 4 yönü göster
-        if (dirIndicators.Count == 0)
-        {
-            foreach (var d in dirs)
-            {
-                var indicatorPos = cellCenter + new Vector3(d.x * 0.55f, d.y * 0.55f, -0.5f);
-                var go = Instantiate(dirIndicatorPrefab, indicatorPos, Quaternion.identity);
-                var di = go.AddComponent<DirectionIndicator>();
-                di.direction = d;
-
-                if (go.GetComponent<Collider2D>() == null)
+                if (ind == null) continue;
+                if (Vector2.Distance(world, ind.transform.position) < clickRadius)
                 {
-                    var col = go.AddComponent<CircleCollider2D>();
-                    col.radius = 0.28f;
+                    var di = ind.GetComponent<DirectionIndicator>();
+                    if (di != null) OnDirectionSelected(di.direction);
+                    return;
                 }
-
-                var sr = go.GetComponent<SpriteRenderer>();
-                if (sr) sr.color = new Color(1f, 0.5f, 0.3f, 0.85f); // turuncu = bounce gerekecek
-
-                dirIndicators.Add(go);
             }
+
+            // Top sayısı dolduysa sadece var olan toplara giriş kabul et
+            if (balls.Count >= maxBalls) return;
+
+            // Köşeye snap
+            var (valid, corner) = GridManager.Instance.WorldToNearestPlayableCorner(world);
+            if (valid) ShowCornerIndicators(corner);
         }
     }
 
-    void ClearDirIndicators()
+    const float clickRadius = 0.40f;
+
+    Vector3 ScreenToWorld(Vector2 screen)
+        => Camera.main.ScreenToWorldPoint(new Vector3(screen.x, screen.y, 0f));
+
+    // -----------------------------------------------------------------------
+    // Köşe Yön Göstergeleri
+    // -----------------------------------------------------------------------
+
+    void ShowCornerIndicators(Vector2Int corner)
+    {
+        ClearIndicators();
+        pendingSpawn = corner;
+        hasPending   = true;
+
+        var validDirs = GridManager.Instance.GetValidCornerDirections(corner);
+        if (validDirs.Count == 0) { hasPending = false; return; }
+
+        Vector3 cw = GridManager.Instance.CornerToWorld(corner.x, corner.y);
+        foreach (var d in validDirs)
+            SpawnIndicatorAt(cw, d, new Color(1f, 0.92f, 0.28f, 0.9f));
+    }
+
+    void SpawnIndicatorAt(Vector3 center, Vector2Int d, Color color)
+    {
+        var pos = center + new Vector3(d.x * 0.52f, d.y * 0.52f, -0.5f);
+        var go  = Instantiate(dirIndicatorPrefab, pos, Quaternion.identity);
+        go.name = $"Ind_{d.x}_{d.y}";
+
+        var di = go.AddComponent<DirectionIndicator>();
+        di.direction = d;
+
+        if (go.GetComponent<Collider2D>() == null)
+            go.AddComponent<CircleCollider2D>().radius = 0.26f;
+
+        var s = go.GetComponent<SpriteRenderer>();
+        if (s != null) s.color = color;
+
+        dirIndicators.Add(go);
+    }
+
+    void ClearIndicators()
     {
         foreach (var g in dirIndicators)
             if (g != null) Destroy(g);
         dirIndicators.Clear();
-        hasPendingCell = false;
+        hasPending = false;
     }
 
     // -----------------------------------------------------------------------
-    // Spawn
+    // Spawn — köşe tabanlı (BallController.InitAtCorner)
     // -----------------------------------------------------------------------
 
-    void SpawnBall(Vector2Int cell, Vector2Int dir)
+    void SpawnBall(Vector2Int corner, Vector2Int dir)
     {
         if (balls.Count >= maxBalls) return;
 
+        // Geçersiz corner+dir kombinasyonu → hayalet top eklenmesin
+        var validDirs = GridManager.Instance.GetValidCornerDirections(corner);
+        if (!validDirs.Contains(dir))
+        {
+            Debug.LogWarning($"[GM] Spawn reddedildi — köşe:{corner} yön:{dir} geçersiz.");
+            return;
+        }
+
         var go = Instantiate(ballPrefab);
         go.name = $"Ball_{balls.Count}";
-        go.transform.position = new Vector3(0, 0, -1f);
+        go.transform.localScale = new Vector3(0.38f, 0.38f, 1f);
 
         var bc = go.GetComponent<BallController>();
         bc.speed = ballSpeed;
-        bc.Init(cell, dir, ballColors[balls.Count % ballColors.Length]);
-
-        if (state == GameState.Paused)
-            bc.SetPaused(true);
+        bc.InitAtCorner(corner, dir, ballColors[balls.Count % ballColors.Length]);
+        bc.SetPaused(true); // Başlat'a kadar bekle
 
         balls.Add(bc);
+        Debug.Log($"[GM] Top #{balls.Count} köşe:{corner} yön:{dir}");
     }
 
     void ClearBalls()
     {
+        // Önce bilinen listeyi imha et
         foreach (var b in balls)
             if (b != null) Destroy(b.gameObject);
         balls.Clear();
+
+        // Sonra orphan BallController'ları süpür (spawn sırası kesilmiş olabilir)
+        foreach (var orphan in Object.FindObjectsByType<BallController>(FindObjectsSortMode.None))
+            if (orphan != null) Destroy(orphan.gameObject);
+    }
+
+    // -----------------------------------------------------------------------
+    // Çarpışma Tespiti — discrete pozisyon karşılaştırması
+    // -----------------------------------------------------------------------
+
+    void CheckBallCollisions()
+    {
+        for (int i = 0; i < balls.Count; i++)
+        {
+            if (balls[i] == null || !balls[i].IsMoving) continue;
+            for (int j = i + 1; j < balls.Count; j++)
+            {
+                if (balls[j] == null || !balls[j].IsMoving) continue;
+                if (balls[i].CurrentPosition != balls[j].CurrentPosition) continue;
+
+                // Aynı konumdalar → yönleri swap et (elastik çarpışma)
+                var dA = balls[i].Direction;
+                var dB = balls[j].Direction;
+                balls[i].Direction = dB;
+                balls[j].Direction = dA;
+                Debug.Log($"[Collision] Ball{i} ↔ Ball{j} @ {balls[i].CurrentPosition}");
+            }
+        }
     }
 
     // -----------------------------------------------------------------------
@@ -261,42 +289,40 @@ public class GameManager : MonoBehaviour
     void SetState(GameState s)
     {
         state = s;
-
         switch (s)
         {
             case GameState.Drawing:
                 GridManager.Instance.SetDrawEnabled(true);
                 PauseAllBalls(true);
                 break;
-
+            case GameState.RegionSelect:
+                GridManager.Instance.SetDrawEnabled(false);
+                break;
             case GameState.SpawnSelect:
                 GridManager.Instance.SetDrawEnabled(false);
-                // Toplar önceki duraklama durumunu korur
+                PauseAllBalls(true);
                 break;
-
             case GameState.Simulating:
                 GridManager.Instance.SetDrawEnabled(false);
                 PauseAllBalls(false);
                 break;
-
             case GameState.Paused:
                 GridManager.Instance.SetDrawEnabled(false);
                 PauseAllBalls(true);
                 break;
         }
-
         OnStateChanged?.Invoke(s);
     }
 
     void PauseAllBalls(bool p)
     {
-        foreach (var b in balls)
-            if (b != null) b.SetPaused(p);
+        foreach (var b in balls) if (b != null) b.SetPaused(p);
     }
 
     void LateUpdate()
     {
-        // Destroy edilmiş topları listeden temizle
         balls.RemoveAll(b => b == null);
+        // Ball-ball çarpışma Faz 1'de devre dışı — discrete pozisyon eşitliği unreliable.
+        // Faz 5'te continuous modelde (pairwise swept sphere-sphere) yeniden yazılacak.
     }
 }

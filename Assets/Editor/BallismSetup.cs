@@ -196,17 +196,18 @@ public class BallismSetup : EditorWindow
 
         // Sağ panel
         RectTransform panel = CreateUIPanel(canvasGO.transform, "Panel",
-            new Vector2(200, 400), new Vector2(1f, 0.5f), new Vector2(1f, 0.5f),
+            new Vector2(200, 460), new Vector2(1f, 0.5f), new Vector2(1f, 0.5f),
             new Vector2(-110, 0));
 
-        uiMgr.confirmShapeButton = CreateButton(panel.transform, "BtnConfirm", "Onayla",   new Vector2(0,  160));
-        uiMgr.clearShapeButton   = CreateButton(panel.transform, "BtnClear",   "Temizle",  new Vector2(0,  110));
-        uiMgr.togglePauseButton  = CreateButton(panel.transform, "BtnPause",   "Durdur",   new Vector2(0,   60));
-        uiMgr.addBallButton      = CreateButton(panel.transform, "BtnAddBall", "Top Ekle", new Vector2(0,   10));
-        uiMgr.resetButton        = CreateButton(panel.transform, "BtnReset",   "Sıfırla",  new Vector2(0,  -40));
+        uiMgr.confirmShapeButton = CreateButton(panel.transform, "BtnConfirm", "Onayla",   new Vector2(0,  180));
+        uiMgr.clearShapeButton   = CreateButton(panel.transform, "BtnClear",   "Temizle",  new Vector2(0,  130));
+        uiMgr.togglePauseButton  = CreateButton(panel.transform, "BtnPause",   "Durdur",   new Vector2(0,   80));
+        uiMgr.addBallButton      = CreateButton(panel.transform, "BtnAddBall", "Top Ekle", new Vector2(0,   30));
+        uiMgr.startButton        = CreateButton(panel.transform, "BtnStart",   "Başlat",   new Vector2(0,  -20));
+        uiMgr.resetButton        = CreateButton(panel.transform, "BtnReset",   "Sıfırla",  new Vector2(0,  -70));
 
-        uiMgr.stateLabel     = CreateLabel(panel.transform, "LblState",  "",         new Vector2(0, -95),  16, FontStyles.Bold);
-        uiMgr.ballCountLabel = CreateLabel(panel.transform, "LblBalls",  "Top: 0/3", new Vector2(0, -125), 14);
+        uiMgr.stateLabel     = CreateLabel(panel.transform, "LblState",  "",         new Vector2(0, -125), 16, FontStyles.Bold);
+        uiMgr.ballCountLabel = CreateLabel(panel.transform, "LblBalls",  "Top: 0/3", new Vector2(0, -155), 14);
 
         GameObject instrGO = new GameObject("LblInstruction");
         instrGO.transform.SetParent(canvasGO.transform, false);

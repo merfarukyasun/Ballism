@@ -3,85 +3,128 @@ using UnityEngine.UI;
 using TMPro;
 
 /// <summary>
-/// Canvas butonlarını ve durum metnini yönetir.
-/// Inspector'dan buton referanslarını bağlayın.
+/// Canvas UI — buton görünürlüğü, durum etiketi, yönergeler.
+/// Faz 2.5: startButton, SpawnSelect akışı, köşe tabanlı spawn yönergesi.
 /// </summary>
 public class UIManager : MonoBehaviour
 {
-    [Header("Buttons")]
-    public Button confirmShapeButton;
-    public Button clearShapeButton;
-    public Button togglePauseButton;
-    public Button addBallButton;
-    public Button resetButton;
+    [Header("Butonlar")]
+    public Button confirmShapeButton; // Drawing
+    public Button clearShapeButton;   // Drawing
+    public Button startButton;        // SpawnSelect (en az 1 top varken)
+    public Button togglePauseButton;  // Simulating / Paused
+    public Button addBallButton;      // Simulating / Paused (maxBalls dolmadıysa)
+    public Button resetButton;        // Drawing hariç her state
 
-    [Header("Labels")]
+    [Header("Etiketler")]
     public TextMeshProUGUI stateLabel;
     public TextMeshProUGUI ballCountLabel;
     public TextMeshProUGUI instructionLabel;
-
-    static readonly string[] Instructions =
-    {
-        /* Drawing     */ "Hücrelere tıkla / sürükle → şekil çiz. Bitti mi? [Onayla]",
-        /* SpawnSelect */ "Şekil içinde bir hücreye tıkla, çıkan oka tıkla → top fırlat.",
-        /* Simulating  */ "Simülasyon devam ediyor. [Durdur] veya [Top Ekle]",
-        /* Paused      */ "Duraklatıldı. [Devam Et] ile simülasyona dön."
-    };
 
     void Start()
     {
         confirmShapeButton?.onClick.AddListener(GameManager.Instance.OnConfirmShape);
         clearShapeButton  ?.onClick.AddListener(GameManager.Instance.OnClearShape);
+        startButton       ?.onClick.AddListener(GameManager.Instance.OnStartSimulation);
         togglePauseButton ?.onClick.AddListener(GameManager.Instance.OnTogglePause);
         addBallButton     ?.onClick.AddListener(GameManager.Instance.OnAddBall);
         resetButton       ?.onClick.AddListener(GameManager.Instance.OnReset);
+
+        // startButton sahnede yoksa simülasyon başlatılamaz — kullanıcıyı uyar.
+        // Buton referansının null kalması güvenlidir: Update ve RefreshUI'daki tüm
+        // startButton erişimleri null-conditional (?.) veya explicit null-check ile
+        // korunur; UI akışı bozulmaz, yalnızca "Başlat" butonu görünmez.
+        if (startButton == null)
+            Debug.LogWarning("[UI] ⚠ startButton referansı yok — sahnede eksik. " +
+                             "Ballism/Setup Scene menüsünü yeniden çalıştır veya " +
+                             "UIManager.startButton alanına Button sürükle.");
 
         GameManager.Instance.OnStateChanged += RefreshUI;
         RefreshUI(GameManager.Instance.State);
     }
 
+    // -----------------------------------------------------------------------
     void Update()
     {
-        // Top sayısını sürekli güncelle
+        var gm = GameManager.Instance;
+
+        // Top sayısı etiketi (her kare)
         if (ballCountLabel != null)
-            ballCountLabel.text = $"Top: {GameManager.Instance.BallCount} / {GameManager.Instance.maxBalls}";
+        {
+            int placed = gm.BallCount;
+            int max    = gm.maxBalls;
+            ballCountLabel.text = placed > 0
+                ? $"Top: {placed} / {max}"
+                : "";
+        }
+
+        // SpawnSelect — yönerge ve Başlat butonu dinamik
+        if (gm.State == GameState.SpawnSelect)
+        {
+            if (instructionLabel != null)
+            {
+                int placed = gm.BallCount;
+                int max    = gm.maxBalls;
+                instructionLabel.text = placed == 0
+                    ? "Mavi alana tıkla → köşeyi seç → oka tıkla → top yerleştir."
+                    : placed < max
+                        ? $"{placed}/{max} top hazır.  Daha fazla ekle veya [Başlat]."
+                        : $"{placed}/{max} top hazır.  [Başlat] ile simülasyonu başlat.";
+            }
+
+            if (startButton != null)
+                startButton.gameObject.SetActive(gm.BallCount > 0);
+        }
     }
 
+    // -----------------------------------------------------------------------
     void RefreshUI(GameState s)
     {
-        // Durum etiketi
+        var gm = GameManager.Instance;
+
+        // ---- Durum etiketi ----
         if (stateLabel != null)
             stateLabel.text = s switch
             {
-                GameState.Drawing     => "ÇİZİM",
-                GameState.SpawnSelect => "TOP SPAWNLA",
-                GameState.Simulating  => "SİMÜLASYON",
-                GameState.Paused      => "DURAKLATILDI",
-                _                     => ""
+                GameState.Drawing      => "ÇİZİM",
+                GameState.RegionSelect => "BÖLGE SEÇ",
+                GameState.SpawnSelect  => "TOP YERLEŞTIR",
+                GameState.Simulating   => "SİMÜLASYON",
+                GameState.Paused       => "DURAKLATILDI",
+                _                      => ""
             };
 
-        // Yönerge
-        if (instructionLabel != null)
-            instructionLabel.text = Instructions[(int)s];
+        // ---- Yönerge (SpawnSelect dinamik, Update'te güncelleniyor) ----
+        if (instructionLabel != null && s != GameState.SpawnSelect)
+            instructionLabel.text = s switch
+            {
+                GameState.Drawing      => "Kırmızı kenar çiz → kapalı alan → [Onayla]",
+                GameState.RegionSelect => "Fareyi bölgenin üzerine getir → yeşil görünce tıkla",
+                GameState.Simulating   => "Simülasyon aktif.  [Durdur] ile beklet.",
+                GameState.Paused       => "Duraklatıldı.  [Devam Et] veya [Top Ekle].",
+                _                      => ""
+            };
 
-        // Duraklat / Devam butonu metni
+        // ---- Durdur / Devam etiketi ----
         if (togglePauseButton != null)
         {
-            var txt = togglePauseButton.GetComponentInChildren<TextMeshProUGUI>();
-            if (txt != null)
-                txt.text = s == GameState.Paused ? "Devam Et" : "Durdur";
+            var lbl = togglePauseButton.GetComponentInChildren<TextMeshProUGUI>();
+            if (lbl != null) lbl.text = s == GameState.Paused ? "Devam Et" : "Durdur";
         }
 
-        // Buton görünürlükleri
-        bool drawing    = s == GameState.Drawing;
-        bool canAddBall = (s == GameState.Simulating || s == GameState.Paused)
-                          && GameManager.Instance.BallCount < GameManager.Instance.maxBalls;
-        bool canPause   = s == GameState.Simulating || s == GameState.Paused;
+        // ---- Buton görünürlükleri ----
+        bool drawing     = s == GameState.Drawing;
+        bool spawnSelect = s == GameState.SpawnSelect;
+        bool canPause    = s == GameState.Simulating || s == GameState.Paused;
+        bool canAddBall  = (s == GameState.Simulating || s == GameState.Paused)
+                           && gm.BallCount < gm.maxBalls;
+        bool canStart    = spawnSelect && gm.BallCount > 0;
 
-        confirmShapeButton ?.gameObject.SetActive(drawing);
-        clearShapeButton   ?.gameObject.SetActive(drawing);
-        togglePauseButton  ?.gameObject.SetActive(canPause);
-        addBallButton      ?.gameObject.SetActive(canAddBall);
-        resetButton        ?.gameObject.SetActive(s != GameState.Drawing);
+        confirmShapeButton?.gameObject.SetActive(drawing);
+        clearShapeButton  ?.gameObject.SetActive(drawing);
+        startButton       ?.gameObject.SetActive(canStart);
+        togglePauseButton ?.gameObject.SetActive(canPause);
+        addBallButton     ?.gameObject.SetActive(canAddBall);
+        resetButton       ?.gameObject.SetActive(!drawing);
     }
 }
