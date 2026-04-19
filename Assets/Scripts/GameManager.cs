@@ -35,6 +35,9 @@ public class GameManager : MonoBehaviour
     };
 
     // -----------------------------------------------------------------------
+    // SpawnSelect iki fazlı: önce köşe, sonra yön
+    enum SpawnPhase { CornerPick, DirectionPick }
+
     GameState            state;
     List<BallController> balls         = new List<BallController>();
     List<GameObject>     dirIndicators = new List<GameObject>();
@@ -42,9 +45,27 @@ public class GameManager : MonoBehaviour
     Vector2Int pendingSpawn;  // köşe koordinatı (corner space)
     bool       hasPending;
 
+    // -----------------------------------------------------------------------
+    // Spawn UX (intermediate pass)
+    SpawnPhase     spawnPhase     = SpawnPhase.CornerPick;
+    Vector2Int?    selectedCorner = null;
+    GameObject     hoverHalo;      // reused hover sprite
+    GameObject     selectedHalo;   // ayrı "seçili köşe" sprite
+    HashSet<Vector2Int> occupiedCorners = new HashSet<Vector2Int>();
+
+    // Pause orchestration (safe-corner-stop)
+    bool pauseRequested;
+    int  ballsAwaitingStop;
+
     public GameState State     => state;
     public int       BallCount => balls.Count;
     public System.Action<GameState> OnStateChanged;
+
+    /// <summary>UIManager yönergesi için — SpawnSelect + CornerPick fazında mı?</summary>
+    public bool IsPickingCorner => state == GameState.SpawnSelect
+                                   && spawnPhase == SpawnPhase.CornerPick;
+    /// <summary>UIManager etiketi için — "Durduruluyor..." durumu.</summary>
+    public bool IsStopping      => state == GameState.Simulating && pauseRequested;
 
     // -----------------------------------------------------------------------
     void Awake() => Instance = this;
@@ -78,22 +99,80 @@ public class GameManager : MonoBehaviour
     public void OnAddBall()
     {
         if (state != GameState.Simulating && state != GameState.Paused) return;
+        if (pauseRequested) return; // Durdurma in-flight → spawn akışı açılmasın
         if (balls.Count >= maxBalls) return;
         SetState(GameState.SpawnSelect);
     }
 
     public void OnTogglePause()
     {
-        if (state == GameState.Simulating) SetState(GameState.Paused);
-        else if (state == GameState.Paused) SetState(GameState.Simulating);
+        // Simulating → "safe-corner-stop" isteği
+        if (state == GameState.Simulating)
+        {
+            if (pauseRequested) return; // çift Durdur no-op
+
+            ballsAwaitingStop = 0;
+            foreach (var b in balls)
+            {
+                if (b == null || !b.IsMoving || b.IsPaused) continue;
+                b.RequestPauseAtNextCorner();
+                ballsAwaitingStop++;
+            }
+
+            if (ballsAwaitingStop == 0)
+            {
+                // Hareketli top yok — doğrudan Paused
+                SetState(GameState.Paused);
+                return;
+            }
+
+            pauseRequested = true;
+            OnStateChanged?.Invoke(state); // UI "DURDURULUYOR..." etiketini güncellesin
+            return;
+        }
+
+        // Paused → Resume: occupied köşeler artık boşalacak
+        if (state == GameState.Paused)
+        {
+            occupiedCorners.Clear();
+            SetState(GameState.Simulating);
+        }
+    }
+
+    /// <summary>BallController callback — bir top tam köşeye oturdu.</summary>
+    void OnBallStoppedAtCorner(BallController b, Vector2Int corner)
+    {
+        // Reset sonrası gecikmiş callback veya alakasız durum → ignore
+        if (state != GameState.Simulating || !pauseRequested) return;
+
+        occupiedCorners.Add(corner);
+        ballsAwaitingStop--;
+
+        if (ballsAwaitingStop <= 0)
+        {
+            pauseRequested    = false;
+            ballsAwaitingStop = 0;
+            SetState(GameState.Paused);
+        }
     }
 
     public void OnReset()
     {
         ClearBalls();
         ClearIndicators();
+        HideHoverHalo();
+        HideSelectedHalo();
         GridManager.Instance.Clear();
-        hasPending = false;
+
+        // Tüm UX/pause sayaçlarını güvenli sıfırla — gecikmiş callback'ler
+        // OnBallStoppedAtCorner guard'ı tarafından yutulacak.
+        occupiedCorners.Clear();
+        pauseRequested    = false;
+        ballsAwaitingStop = 0;
+        spawnPhase        = SpawnPhase.CornerPick;
+        selectedCorner    = null;
+        hasPending        = false;
+
         SetState(GameState.Drawing);
     }
 
@@ -111,7 +190,10 @@ public class GameManager : MonoBehaviour
         if (!hasPending) return;
         SpawnBall(pendingSpawn, dir);
         ClearIndicators();
-        hasPending = false;
+        HideSelectedHalo();
+        hasPending     = false;
+        selectedCorner = null;
+        spawnPhase     = SpawnPhase.CornerPick;
         OnStateChanged?.Invoke(state); // Başlat butonu görünürlüğünü güncelle
     }
 
@@ -140,14 +222,43 @@ public class GameManager : MonoBehaviour
             return;
         }
 
-        // ---- SpawnSelect: köşeye tıkla → yön göstergeleri; oka tıkla → top ----
+        // ---- SpawnSelect: iki fazlı — önce köşe, sonra yön ----
         if (state == GameState.SpawnSelect)
         {
+            Vector3 world = ScreenToWorld(mouse.position.ReadValue());
+            var (valid, corner) = GridManager.Instance.WorldToNearestPlayableCorner(world);
+
+            // --- Faz A: CornerPick (hover + click-to-pick) ---
+            if (spawnPhase == SpawnPhase.CornerPick)
+            {
+                // Top sayısı dolduysa hover'ı gizle; yine de tıklama no-op
+                if (balls.Count >= maxBalls) { HideHoverHalo(); return; }
+
+                if (valid)
+                {
+                    bool occupied = occupiedCorners.Contains(corner);
+                    ShowHoverHalo(corner, occupied);
+
+                    if (mouse.leftButton.wasPressedThisFrame && !occupied)
+                    {
+                        // Köşe seçildi → DirectionPick fazına geç
+                        selectedCorner = corner;
+                        spawnPhase     = SpawnPhase.DirectionPick;
+                        HideHoverHalo();
+                        ShowSelectedHalo(corner);
+                        ShowCornerIndicators(corner);
+                    }
+                }
+                else
+                {
+                    HideHoverHalo();
+                }
+                return;
+            }
+
+            // --- Faz B: DirectionPick (indicator click → spawn; boşluk → iptal) ---
             if (!mouse.leftButton.wasPressedThisFrame) return;
 
-            Vector3 world = ScreenToWorld(mouse.position.ReadValue());
-
-            // Önce yön göstergelerine bak
             foreach (var ind in dirIndicators)
             {
                 if (ind == null) continue;
@@ -159,13 +270,17 @@ public class GameManager : MonoBehaviour
                 }
             }
 
-            // Top sayısı dolduysa sadece var olan toplara giriş kabul et
-            if (balls.Count >= maxBalls) return;
-
-            // Köşeye snap
-            var (valid, corner) = GridManager.Instance.WorldToNearestPlayableCorner(world);
-            if (valid) ShowCornerIndicators(corner);
+            // Indicator'a değilse: iptal, CornerPick'e dön
+            CancelDirectionPick();
         }
+    }
+
+    void CancelDirectionPick()
+    {
+        ClearIndicators();
+        HideSelectedHalo();
+        selectedCorner = null;
+        spawnPhase     = SpawnPhase.CornerPick;
     }
 
     const float clickRadius = 0.40f;
@@ -187,8 +302,9 @@ public class GameManager : MonoBehaviour
         if (validDirs.Count == 0) { hasPending = false; return; }
 
         Vector3 cw = GridManager.Instance.CornerToWorld(corner.x, corner.y);
+        // Turuncu ton — selected halo'nun (mavi) zıt eşi, net ayrışsın.
         foreach (var d in validDirs)
-            SpawnIndicatorAt(cw, d, new Color(1f, 0.92f, 0.28f, 0.9f));
+            SpawnIndicatorAt(cw, d, new Color(1f, 0.55f, 0.15f, 0.95f));
     }
 
     void SpawnIndicatorAt(Vector3 center, Vector2Int d, Color color)
@@ -218,6 +334,73 @@ public class GameManager : MonoBehaviour
     }
 
     // -----------------------------------------------------------------------
+    // Hover / Selected köşe halo'ları
+    // (Yeni sprite asset yok — dirIndicatorPrefab'ı reuse ederiz.)
+    // -----------------------------------------------------------------------
+
+    static readonly Color HaloValidColor    = new Color(1f,    0.90f, 0.25f, 0.55f); // sarı
+    static readonly Color HaloOccupiedColor = new Color(1f,    0.25f, 0.25f, 0.55f); // kırmızı
+    static readonly Color HaloSelectedColor = new Color(0.25f, 0.70f, 1f,    0.90f); // mavi
+
+    GameObject EnsureHalo(GameObject existing, string name, float scale, int sortOrder)
+    {
+        if (existing != null) return existing;
+        if (dirIndicatorPrefab == null) return null;
+
+        var go = Instantiate(dirIndicatorPrefab);
+        go.name = name;
+
+        // Etkileşimsiz görsel: DirectionIndicator + Collider varsa kaldır
+        var di = go.GetComponent<DirectionIndicator>();
+        if (di != null) Destroy(di);
+        var col = go.GetComponent<Collider2D>();
+        if (col != null) Destroy(col);
+
+        go.transform.localScale = new Vector3(scale, scale, 1f);
+
+        var s = go.GetComponent<SpriteRenderer>();
+        if (s != null) s.sortingOrder = sortOrder;
+
+        return go;
+    }
+
+    void ShowHoverHalo(Vector2Int corner, bool occupied)
+    {
+        hoverHalo = EnsureHalo(hoverHalo, "HoverHalo", 0.45f, -1);
+        if (hoverHalo == null) return;
+
+        Vector3 cw = GridManager.Instance.CornerToWorld(corner.x, corner.y);
+        hoverHalo.transform.position = new Vector3(cw.x, cw.y, -0.3f);
+
+        var s = hoverHalo.GetComponent<SpriteRenderer>();
+        if (s != null) s.color = occupied ? HaloOccupiedColor : HaloValidColor;
+    }
+
+    void HideHoverHalo()
+    {
+        if (hoverHalo != null) Destroy(hoverHalo);
+        hoverHalo = null;
+    }
+
+    void ShowSelectedHalo(Vector2Int corner)
+    {
+        selectedHalo = EnsureHalo(selectedHalo, "SelectedHalo", 0.60f, 0);
+        if (selectedHalo == null) return;
+
+        Vector3 cw = GridManager.Instance.CornerToWorld(corner.x, corner.y);
+        selectedHalo.transform.position = new Vector3(cw.x, cw.y, -0.4f);
+
+        var s = selectedHalo.GetComponent<SpriteRenderer>();
+        if (s != null) s.color = HaloSelectedColor;
+    }
+
+    void HideSelectedHalo()
+    {
+        if (selectedHalo != null) Destroy(selectedHalo);
+        selectedHalo = null;
+    }
+
+    // -----------------------------------------------------------------------
     // Spawn — köşe tabanlı (BallController.InitAtCorner)
     // -----------------------------------------------------------------------
 
@@ -241,8 +424,10 @@ public class GameManager : MonoBehaviour
         bc.speed = ballSpeed;
         bc.InitAtCorner(corner, dir, ballColors[balls.Count % ballColors.Length]);
         bc.SetPaused(true); // Başlat'a kadar bekle
+        bc.OnStoppedAtCorner = OnBallStoppedAtCorner;
 
         balls.Add(bc);
+        occupiedCorners.Add(corner); // Başlangıç köşesi artık dolu
         Debug.Log($"[GM] Top #{balls.Count} köşe:{corner} yön:{dir}");
     }
 
@@ -301,10 +486,16 @@ public class GameManager : MonoBehaviour
             case GameState.SpawnSelect:
                 GridManager.Instance.SetDrawEnabled(false);
                 PauseAllBalls(true);
+                // Her girişte temiz başla
+                spawnPhase     = SpawnPhase.CornerPick;
+                selectedCorner = null;
+                HideSelectedHalo();
                 break;
             case GameState.Simulating:
                 GridManager.Instance.SetDrawEnabled(false);
                 PauseAllBalls(false);
+                // Toplar köşeleri terk ediyor — tek kaynak hakikat burada.
+                occupiedCorners.Clear();
                 break;
             case GameState.Paused:
                 GridManager.Instance.SetDrawEnabled(false);

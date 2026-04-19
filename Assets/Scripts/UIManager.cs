@@ -58,22 +58,37 @@ public class UIManager : MonoBehaviour
                 : "";
         }
 
-        // SpawnSelect — yönerge ve Başlat butonu dinamik
+        // SpawnSelect — yönerge (iki fazlı) ve Başlat butonu dinamik
         if (gm.State == GameState.SpawnSelect)
         {
             if (instructionLabel != null)
             {
                 int placed = gm.BallCount;
                 int max    = gm.maxBalls;
-                instructionLabel.text = placed == 0
-                    ? "Mavi alana tıkla → köşeyi seç → oka tıkla → top yerleştir."
-                    : placed < max
-                        ? $"{placed}/{max} top hazır.  Daha fazla ekle veya [Başlat]."
-                        : $"{placed}/{max} top hazır.  [Başlat] ile simülasyonu başlat.";
+
+                if (gm.IsPickingCorner)
+                {
+                    instructionLabel.text = placed == 0
+                        ? "1) Geçerli bir köşeye tıkla (sarı = boş, kırmızı = dolu)."
+                        : placed < max
+                            ? $"{placed}/{max} top hazır.  Yeni köşe seç veya [Başlat]."
+                            : $"{placed}/{max} top hazır.  [Başlat] ile simülasyonu başlat.";
+                }
+                else // DirectionPick
+                {
+                    instructionLabel.text = "2) Bir ok seç (top yerleşir)  •  " +
+                                            "boş alana tıkla → iptal.";
+                }
             }
 
             if (startButton != null)
                 startButton.gameObject.SetActive(gm.BallCount > 0);
+        }
+
+        // Simulating — "DURDURULUYOR..." etiketi (pause in-flight)
+        if (gm.State == GameState.Simulating && stateLabel != null)
+        {
+            stateLabel.text = gm.IsStopping ? "DURDURULUYOR…" : "SİMÜLASYON";
         }
     }
 

@@ -1,98 +1,90 @@
 # Ballism — Bilinen Sorunlar
-_Son güncelleme: Faz 2.5 sonrası, mimari pivot öncesi stabilizasyon planı_
+_Son güncelleme: `prototype-v0.2` sonrası + Spawn UX / Pause Semantics pass_
 
 ---
 
-## BLOCKER — Faz 1 (Stabilizasyon) kapsamı
+## ÇÖZÜLEN — `prototype-v0.2` içinde kapatıldı
 
-### 1. `TrailRenderer` Unity fake-null
-**Dosya:** `Assets/Scripts/BallController.cs` — `SetupVisuals()` (~satır 273)
-```csharp
-var trail = GetComponent<TrailRenderer>() ?? gameObject.AddComponent<TrailRenderer>();
-```
-Unity'nin fake-null davranışı: `GetComponent` "null" görünse de `??` operatörü için non-null sayılır → `AddComponent` çağrılmaz → null reference. 
-**Fix:** explicit null check.
-```csharp
-var trail = GetComponent<TrailRenderer>();
-if (trail == null) trail = gameObject.AddComponent<TrailRenderer>();
-```
+### ✅ 1. `TrailRenderer` Unity fake-null
+- `BallController.SetupVisuals` — explicit `if (trail == null)` deseni uygulandı.
 
-### 2. Discrete ball-ball çarpışma stabil değil
-**Dosya:** `Assets/Scripts/GameManager.cs` — `CheckBallCollisions()` (~satır 252) ve `LateUpdate` (~satır 309)
-- Model: aynı `CurrentPosition`'da iki top → `Direction` swap.
-- Sorun: step-based hareket içinde iki top aynı frame aynı hücreye nadiren denk gelir → çarpışma kaçar; ayrıca swap sonrası iki topun fromPos/toPos state'leri lerp ortasında kalıyor → görsel aksaklık.
-- **Şimdilik devre dışı bırak**: `LateUpdate`'teki `CheckBallCollisions()` çağrısını kaldır. Faz 5'te continuous modelde yeniden yazılacak.
+### ✅ 2. Discrete ball-ball çarpışma stabilsiz
+- `GameManager.LateUpdate` içindeki `CheckBallCollisions()` çağrısı kaldırıldı.
+- Metod korundu, Faz 5 (continuous) kapsamında yeniden yazılacak.
 
-### 3. Reset tam temizlemiyor
-**Dosya:** `Assets/Scripts/GameManager.cs` — `OnReset()` / `ClearBalls()`
-- `balls` listesi boşaltılıyor ama sahneye düşmüş orphan `BallController` olabilir (spawn sırası kesildiyse).
-- **Fix:** `ClearBalls` içinde liste dışı yedek:
-  ```csharp
-  foreach (var b in FindObjectsByType<BallController>(FindObjectsSortMode.None))
-      if (b != null) Destroy(b.gameObject);
-  ```
+### ✅ 3. Reset tam temizlemiyordu
+- `ClearBalls` → önce `balls` listesi Destroy, sonra `Object.FindObjectsByType<BallController>` orphan sweep.
 
-### 4. Spawn validation eksik
-**Dosya:** `Assets/Scripts/GameManager.cs` — `SpawnBall(corner, dir)` (~satır 224)
-- Korner ve yön doğrulanmadan top yaratılıyor. Geçersiz yön verilirse `InitAtCorner` içinde `moving=false` olsa da `balls` listesine ekleniyor → hayalet top sayısı.
-- **Fix:** `SpawnBall` içinde `GridManager.GetValidCornerDirections(corner).Contains(dir)` kontrolü; geçersizse early return.
+### ✅ 4. Spawn validation eksikti
+- `SpawnBall` → `GetValidCornerDirections(corner).Contains(dir)` kontrolü + warning.
 
-### 5. Sahne `Ballceyda.unity`'de `startButton` yok
-- `UIManager.startButton` referansı null olursa sessiz geçer ama simülasyon başlatılamaz.
-- **Fix seçenekleri:**
-  a) Kullanıcı `Ballism/Setup Scene` menüsünü rerun eder.
-  b) Editor'de manuel Button ekler ve `UIManager.startButton` alanına sürükler.
-  c) `UIManager.Start()` içinde hard fail log eklenir ("⚠ startButton ref yok").
+### ✅ 5. `startButton` null riski
+- `UIManager.Start` içinde uyarı + mevcut `?.` safe guard'lar korundu. UI akışı bozulmuyor.
 
 ---
 
-## Mimari / Yeniden Yazım (Faz 2 kapsamı — stabilize edilmeyecek, değiştirilecek)
+## ÇÖZÜLEN — UX pass içinde kapatıldı (commit bekliyor)
 
-### 6. Discrete hareket modeli
-**Dosyalar:** `BallController.cs` (tüm), `GridManager.Bounce`, `GridManager.BounceFromCorner`
-- Cell/corner step-based hareket sürekli sandbox vizyonu ile uyumsuz.
-- Faz 2'de tamamen `BallBody` + `WallCollisionService` ile değiştirilecek.
-- **Not:** Faz 1 stabilizasyonu sadece mevcut discrete sistemin çökmemesini sağlar; uzun vadede kod gider.
+### ✅ 6. Spawn köşe ve yön seçimi iç içeydi
+- `SpawnPhase { CornerPick, DirectionPick }` alt-state eklendi.
+- Önce köşe seçilir (hover halo ile), sonra yön indicator'ları gösterilir.
+- Seçili köşe mavi halo ile vurgulanır, indicator'lar turuncu — görsel ayrım net.
 
-### 7. Corner bounce edge-case'leri
-**Dosya:** `GridManager.BounceFromCorner`
-- ConvexCorner `revOpen` düzeltmesi yapıldı (son surgical edit) ama `ConcaveCorner` + mikro-adım sıkışması hâlâ mümkün.
-- **Durum:** Faz 2'de bu fonksiyon kaldırılacak → iyileştirme yerine çöp.
+### ✅ 7. Dolu köşeye tekrar spawn
+- `HashSet<Vector2Int> occupiedCorners` — spawn sonrası ve pause sonrası köşeler.
+- CornerPick hover'da dolu köşe kırmızı halo ile gösterilir, tıklama reddedilir.
+
+### ✅ 8. Pause anlık donma
+- `BallController.RequestPauseAtNextCorner()` + `OnStoppedAtCorner` callback.
+- Her top bir sonraki köşeye tam oturunca kendini pause'lar ve GM'ye bildirir.
+- Tüm hareketli toplar durunca `GameState.Paused`'a geçilir.
+- Resume (`OnTogglePause` Paused → Simulating) `occupiedCorners.Clear()` yapar, toplar devam eder.
 
 ---
 
-## Görsel / Render
+## AÇIK — İzlenecek / Potansiyel
 
-### 8. URP `Sprites/Default` pembe render riski
-**Dosya:** `BallController.SetupVisuals()` — trail material
-```csharp
-var sh = Shader.Find("Sprites/Default");
-```
-- URP 2D altında bazen magenta render. Kullanıcı şu an için sorun bildirmedi ama Faz 2 `BallView` içinde URP shader'a geçilecek.
+### 9. Pause → Reset race (guard'lar var, test edilmeli)
+- `OnReset`'te `pauseRequested = false; ballsAwaitingStop = 0` sıfırlanır.
+- `OnBallStoppedAtCorner` callback'inde `if (state != Simulating || !pauseRequested) return;` guard → gecikmiş çağrı ignore.
+- **Hâlâ manuel test ister:** Durdur'a bas, toplar köşeye vurana ~0.1 sn kala Sıfırla → console temiz olmalı.
 
-### 9. Neon bloom yok
-- Sadece soft glow child sprite'ı. Tam neon görünümü için URP Post-Processing Volume + Bloom override gerekir.
-- **Durum:** Faz 3 polish.
+### 10. Dead-end top
+- `BallController.ResolveDirectionCorner` trap durumunda `moving=false` yapıyor.
+- `OnTogglePause` `IsMoving` filtresi uygular → dead-end top sayaca girmez.
+- `IsPaused` filtresi ayrıca eklendi (önceden pause'lanmış top sayılmaz).
+- Dead-end top `occupiedCorners`'a girmez — ama aslında o köşede duruyor. Sonraki SpawnSelect'te o köşe dolu görünmez → ufak tutarsızlık. Faz 2 continuous rewrite bunu çözüyor.
 
-### 10. Edge hover highlight yok (çizim modunda)
+### 11. Corner movement "dışarıdan giriş"
+- Belirli şekillerde top seçili olmayan hücreden geçebiliyor gibi — repro edilmedi.
+- Faz 2 continuous modelde otomatik çözülür (geometri tabanlı çarpışma).
+
+### 12. `Bounce` / `BounceFromCorner` kaldırılacak
+- Faz 2 continuous rewrite bunları sileceği için iyileştirme yapılmıyor.
+
+---
+
+## Görsel / Render — Faz 3 polish
+
+### 13. URP `Sprites/Default` pembe render riski
+- `BallController.SetupVisuals` trail material.
+- Şu an sorun raporlanmadı; Faz 3'te `Universal Render Pipeline/2D/Sprite-Unlit-Default`'a geçilecek.
+
+### 14. Neon bloom yok
+- Sadece soft glow child. Tam neon için URP Post Volume + Bloom override.
+- Faz 3 polish.
+
+### 15. Edge hover highlight yok (çizim modunda)
 - Kullanıcı fareyle kenar üzerindeyken görsel feedback yok.
-- **Durum:** Faz 3 polish.
+- Faz 3 polish.
 
 ---
 
 ## Git / Süreç
 
-### 11. Faz 1 + 2 + 2.5 commit edilmedi
-- Branch: `dev`. Son commit: Faz 0 (695fafd).
-- **Öneri:** Faz 1 (stabilizasyon) tamamlanınca tek commit → checkpoint. Mimari pivot öncesi güvenli dönüş noktası.
-
----
-
-## İzlenecek / Belirsiz
-
-- **Corner movement "dışarıdan giriş":** Belirli şekillerde top seçili olmayan hücreden geçebiliyor gibi görünüyor — repro edilmedi. Faz 2 continuous modelde otomatik çözülür.
-- **"Traversal geçersiz" warning:** `BallController.ResolveDirectionCorner` içinde `LogWarning` — kullanıcı oyun içinde görüyor mu? Tracking eksik.
-- **Substep sıkışması:** Continuous modelde `maxSubsteps` aşımı = ball içeri girmiş demek; log + fallback gerek.
+### 16. UX pass commit edilmedi
+- Branch: `dev`. Son commit: `4c3eabb` (tag: `prototype-v0.2`).
+- Kullanıcı manuel test sonrası commit kararı verecek.
 
 ---
 

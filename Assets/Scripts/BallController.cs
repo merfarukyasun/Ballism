@@ -44,8 +44,15 @@ public class BallController : MonoBehaviour
     SpriteRenderer glowRenderer;
 
     // -----------------------------------------------------------------------
+    // Safe-corner-stop (intermediate UX pass)
+    bool pauseAtNextCorner;
+    /// <summary>GM'nin "top bir sonraki köşeye oturdu" bildirimi için callback.</summary>
+    public System.Action<BallController, Vector2Int> OnStoppedAtCorner;
+
+    // -----------------------------------------------------------------------
     // Public API
     public bool       IsMoving       => moving;
+    public bool       IsPaused       => paused;
     public Vector2Int GridPosition   => gridPos;   // hücre modu
     public Vector2Int CornerPosition => cornerPos; // köşe modu
 
@@ -54,6 +61,9 @@ public class BallController : MonoBehaviour
 
     /// <summary>Çarpışma yön swap'ı için getter/setter.</summary>
     public Vector2Int Direction { get => dir; set => dir = value; }
+
+    /// <summary>Top bir sonraki köşeye tam oturduğunda kendini pause'lar.</summary>
+    public void RequestPauseAtNextCorner() => pauseAtNextCorner = true;
 
     // -----------------------------------------------------------------------
     void Awake() => sr = GetComponent<SpriteRenderer>();
@@ -149,6 +159,15 @@ public class BallController : MonoBehaviour
                 ResolveDirectionCorner();
                 if (!moving) return;
                 toPos = GridManager.Instance.CornerToWorld(cornerPos.x + dir.x, cornerPos.y + dir.y);
+
+                // Safe-corner-stop: GM pause isteği bekliyorsa, tam köşeye oturmuş
+                // halde (fromPos==cornerPos, t=0, toPos=next) kendimizi pause'la.
+                if (pauseAtNextCorner)
+                {
+                    pauseAtNextCorner = false;
+                    paused = true;
+                    OnStoppedAtCorner?.Invoke(this, cornerPos);
+                }
             }
             else
             {

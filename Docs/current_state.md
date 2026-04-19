@@ -1,37 +1,40 @@
 # Ballism — Güncel Durum
-_Son güncelleme: Faz 2.5 uygulandı (stabil değil) + Mimari pivot kararı alındı (kod yazılmadı)_
+_Son güncelleme: `prototype-v0.2` checkpoint + Spawn UX / Pause Semantics intermediate pass_
 
 ---
 
 ## Özet
 
-- **Kod durumu:** Faz 2.5 tamamlandı (köşe tabanlı spawn, neon/trail, discrete çarpışma) ama **stabil değil**.
-- **Son surgical edit:** `GridManager.BounceFromCorner` ConvexCorner dalına `revOpen` kontrolü eklendi.
-- **Büyük karar:** Ballism'in gerçek vizyonu **sürekli (continuous) sandbox simülasyonu**. Mevcut discrete/step-based hareket modeli yanlış temel — Faz 2'de tümüyle yeniden yazılacak.
-- **Commit durumu:** Bu oturumda hiç commit atılmadı. Branch: `dev`. Son commit: Faz 0 (695fafd).
+- **Checkpoint:** `prototype-v0.2` (commit `4c3eabb`) — stabil baseline, remote'a push edildi.
+- **Intermediate UX pass** uygulandı: iki fazlı spawn, occupied corner takibi, safe-corner-stop pause. Commit edilmedi.
+- **Büyük karar (değişmedi):** Ana Faz 2 hâlâ **continuous motion rewrite**. Bu UX pass ara katman; continuous rewrite geldiğinde büyük kısmı doğal olarak çöpe gidecek.
+- **Branch:** `dev`. Son commit: `4c3eabb` (tag: `prototype-v0.2`).
 
 ---
 
-## Mimari Pivot (karar verildi, uygulanmadı)
+## Mimari Pivot (karar korunuyor, uygulanmadı)
 
-**Eski model (şu an kodda):** Top hücre→hücre veya köşe→köşe ayrık adımlarla hareket eder; her adımda `Bounce`/`BounceFromCorner` yön döndürür. Çarpışma = discrete pozisyon eşitliği.
+**Eski model (şu an kodda):** Top hücre→hücre veya köşe→köşe ayrık adımlarla hareket eder; her adımda `Bounce`/`BounceFromCorner` yön döndürür.
 
-**Yeni model (hedef):**
+**Yeni model (Faz 2 — continuous rewrite):**
 - Top sürekli (`float` pozisyon, `Vector2` velocity) hareket eder.
-- Duvar çarpışması = **swept circle-line segment** (önceden hesaplanan toi + reflect).
-- Grid **yalnızca editör/referans** — simülasyon durumunun parçası değil.
-- Katmanlı mimari: **L1 Config → L2 Grid Editor → L3 Geometry (edge→segment set) → L4 Simulation (BallBody + WallCollisionService) → L5 Presentation → L6 UI/State**.
+- Duvar çarpışması = **swept circle-line segment**.
+- Katmanlı mimari: **L1 Config → L2 Grid Editor → L3 Geometry → L4 Simulation → L5 Presentation → L6 UI/State**.
 
 Tam plan için bkz. `next_phase_plan.md`.
 
 ---
 
-## Oyun Akışı (şu anki kod)
+## Oyun Akışı (son hali)
 
 ```
 Drawing ──[Onayla]──► RegionSelect ──[tıkla]──► SpawnSelect ──[Başlat]──► Simulating ⇄ Paused
-   ▲         hover         iç/dış          köşe seç, ≤3 top                    │
-   └─────────────────────── [Sıfırla] ─────────────────────────────────────────┘
+   ▲         hover         iç/dış          ┌──────────────┐                     │
+   │                                       │ CornerPick   │             [Durdur] = safe-
+   │                                       │   ↓ click    │              corner-stop
+   │                                       │ DirectionPick│              (top bir sonraki
+   │                                       └──────────────┘               köşeye oturup durur)
+   └─────────────────────────── [Sıfırla] ────────────────────────────────┘
                                                     ▲ [Top Ekle]
 ```
 
@@ -40,55 +43,56 @@ Drawing ──[Onayla]──► RegionSelect ──[tıkla]──► SpawnSelect
 | State | Aktif giriş | Ne olur |
 |---|---|---|
 | Drawing | `GridManager.Update()` | Kenar toggle, sürükle |
-| RegionSelect | `GameManager.Update()` her kare | Hover yeşil, tıkla seç |
-| SpawnSelect | `GameManager.Update()` | Köşeye snap, yön oku, top yerleştir |
+| RegionSelect | `GameManager.Update()` | Hover yeşil, tıkla seç |
+| SpawnSelect (CornerPick) | `GameManager.Update()` | Hover halo (sarı/kırmızı); tıkla → DirectionPick |
+| SpawnSelect (DirectionPick) | `GameManager.Update()` | Selected halo (mavi) + yön okları (turuncu); ok tıkla → spawn; boşluk → iptal |
 | Simulating | `BallController.Update()` | Discrete adım + corner bounce |
-| Paused | — | Bekle |
+| Simulating + `pauseRequested` | — | "DURDURULUYOR…" — toplar köşeye oturana kadar |
+| Paused | — | Bekle; toplar köşede duruyor, occupied |
 
 ---
 
 ## Mevcut Kod Yapısı (son hali)
 
-### `GridManager.cs` (~680 satır)
-- Edge-based editor: `hEdges[height+1, width]`, `vEdges[height, width+1]`
-- `ComputeRegions()` BFS flood fill; `exteriorRegion` + `allRegions`
-- `ShowRegionPreviews`, `HoverRegionAtCell`, `SelectRegionAtCell`
-- `RefreshPlayableEdges` (inner/border/hidden)
-- **Corner API (Faz 2):** `CornerToWorld`, `WorldToNearestPlayableCorner`, `GetValidCornerDirections`, `BounceFromCorner`
-- **Son edit:** `BounceFromCorner` ConvexCorner dalı `revOpen` kontrolü eklendi — çapraz açık karşı hücre yoksa sadece 2 yansımadan seçim yapılıyor.
+### `GridManager.cs` (~680 satır) — DOKUNULMADI
+- Edge-based editor + region + corner API + Bounce/BounceFromCorner.
+- Faz 2 continuous rewrite'ta `Bounce*` kaldırılacak.
 
-### `BallController.cs` (289 satır)
-- İki mod: `Init` (cell) / `InitAtCorner` (corner). `useCornerMode: bool` ayrımı.
-- Discrete step: `Vector3.Lerp(fromPos, toPos, SmoothStep(t/stepDur))`
-- `ResolveDirection` (cell) → `GridManager.Bounce`
-- `ResolveDirectionCorner` → `GridManager.BounceFromCorner`
-- `SetupVisuals(color)`: Glow child (scale 2.8, alpha 0.15) + `TrailRenderer` (time 0.4, width 0.28→0)
-- `CurrentPosition` (useCornerMode'a göre), `Direction { get; set; }`, `CornerPosition`, `GridPosition`
-- **Faz 2'de tamamen yeniden yazılacak** (sürekli hareket + `Rigidbody2D`-benzeri model).
+### `BallController.cs` (+~15 satır)
+- İki mod: `Init` (cell) / `InitAtCorner` (corner).
+- `SetupVisuals` TrailRenderer fake-null fix uygulandı.
+- **Yeni:** `pauseAtNextCorner` flag + `RequestPauseAtNextCorner()` + `OnStoppedAtCorner` callback + `IsPaused` getter.
+- Corner mode `t >= stepDur` dalında, yeni `toPos` ayarlandıktan sonra pause check; top tam köşede (`fromPos = toPos = cornerPos`, `t = 0`) kendini pause'lar ve GM'ye bildirir.
 
-### `GameManager.cs` (316 satır)
-- State machine (`Drawing/RegionSelect/SpawnSelect/Simulating/Paused`)
-- `OnConfirmShape`, `OnStartSimulation`, `OnAddBall`, `OnTogglePause`, `OnReset`, `OnClearShape`
-- `ShowCornerIndicators(corner)` → `SpawnIndicatorAt` (per direction)
-- `SpawnBall(corner, dir)` → `bc.InitAtCorner(...)` → `SetPaused(true)`
-- `CheckBallCollisions()` LateUpdate'te çağrılır — discrete pozisyon eşitliği + Direction swap. **Stabil değil.**
-- `pendingSpawn: Vector2Int` corner koordinat.
+### `GameManager.cs` (~575 satır)
+- State machine korundu (**yeni GameState eklenmedi**).
+- **Yeni enum (private):** `SpawnPhase { CornerPick, DirectionPick }`.
+- **Yeni field'lar:** `occupiedCorners: HashSet<Vector2Int>`, `spawnPhase`, `selectedCorner`, `hoverHalo`, `selectedHalo`, `pauseRequested`, `ballsAwaitingStop`.
+- **Yeni public property'ler:** `IsPickingCorner`, `IsStopping` (UIManager için).
+- `Update()` SpawnSelect dalı iki fazlı: CornerPick (hover + click) → DirectionPick (ok click veya iptal).
+- `SpawnBall` → `occupiedCorners.Add(corner)` + `bc.OnStoppedAtCorner = OnBallStoppedAtCorner`.
+- `OnTogglePause` Simulating → tüm hareketli toplar için `RequestPauseAtNextCorner`, sayaç ile son top durunca Paused'a geç.
+- `OnBallStoppedAtCorner` callback — `state != Simulating || !pauseRequested` guard ile gecikmiş çağrıları yutar.
+- `OnReset` — **tüm** yeni field'lar güvenli sıfırlanır (occupied, pauseRequested, sayaç, halo'lar, spawnPhase, selectedCorner).
+- `SetState(Simulating)` → `occupiedCorners.Clear()` (tek kaynak hakikat).
+- Halo görselleri: `dirIndicatorPrefab` runtime'da reuse edilir; DirectionIndicator + Collider2D component'leri Destroy edilir. **Yeni sprite asset veya yeni C# sınıfı yok.**
+- `CheckBallCollisions` metodu duruyor ama çağrılmıyor (Faz 5'e rezerv).
 
-### `UIManager.cs` (122 satır)
-- `RefreshUI(state)` buton görünürlüğü + stateLabel + instructionLabel (switch).
-- `Update()` SpawnSelect için dinamik yönerge + startButton visibility (BallCount'a göre).
-- `ballCountLabel` her kare güncellenir.
+### `UIManager.cs` (+~15 satır)
+- Start'ta `startButton` null uyarısı (mevcut null-safe guard'lar korundu).
+- `Update()` SpawnSelect dalı — yönerge `IsPickingCorner`'a göre iki dalda.
+- `Update()` Simulating dalı — `IsStopping` ise stateLabel "DURDURULUYOR…", aksi halde "SİMÜLASYON".
 
 ### Değişmeyen
-`DirectionIndicator.cs`, `GridCell.cs`, `BallismSetup.cs` (küçük: startButton + panel height)
+`DirectionIndicator.cs`, `GridCell.cs`, `BallismSetup.cs`, `GridManager.cs`.
 
 ---
 
 ## Açık Durumlar
 
-- Faz 1 + 2 + 2.5 kodu **commit edilmedi**.
-- Mevcut sahne `Ballceyda.unity`'de `startButton` yok (kullanıcı manuel eklemeli veya Setup rerun).
-- GridManager'daki `Bounce` ve `BounceFromCorner` Faz 2 (continuous) uygulamasında tamamen kaldırılacak.
+- UX pass kodu **commit edilmedi** (kullanıcı test sonrası karar verecek).
+- Mevcut sahne `Ballceyda.unity`'de `startButton` yok (manuel eklenmeli veya Setup rerun — güvenli uyarı var, akış bozulmuyor).
+- Continuous motion rewrite hâlâ sıradaki ana iş.
 
 **Detaylı sorunlar için:** `known_issues.md`
 **Sonraki fazlar için:** `next_phase_plan.md`

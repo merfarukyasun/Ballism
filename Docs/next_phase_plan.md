@@ -5,11 +5,11 @@ _Mimari pivot sonrası plan. Sürekli sandbox simülasyonuna geçiş._
 
 ## Genel Strateji
 
-**Önce stabilize et, sonra yeniden yaz.** Mevcut Faz 2.5 sisteminin çökmemesini sağla (Faz 1); sonra discrete hareket modelini sürekli modelle değiştir (Faz 2). Grid editörü + region + spawn akışı KORUNUR — yalnız hareket/çarpışma çekirdeği değişir.
+**Önce stabilize et, sonra yeniden yaz.** Faz 1 (stabilizasyon) tamamlandı ve `prototype-v0.2` olarak etiketlendi. Arada Spawn UX + Pause Semantics ara katmanı uygulandı (continuous rewrite değil — ara UX pass). Asıl Faz 2 hâlâ continuous motion rewrite.
 
 ---
 
-## Faz 1 — Stabilizasyon (discrete sistemi çalışır halde tut)
+## ✅ Faz 1 — Stabilizasyon (TAMAMLANDI — `prototype-v0.2`)
 
 **Amaç:** Mevcut Faz 2.5 çökmeden test edilebilsin. Kısa süreli — tek commit ile kapatılır.
 
@@ -37,15 +37,31 @@ _Mimari pivot sonrası plan. Sürekli sandbox simülasyonuna geçiş._
    - `if (startButton == null) Debug.LogWarning("⚠ startButton eksik — Setup Scene rerun.");`
 
 ### Çıktı
-- Commit: `faz-1-2-2.5: stabilization pass before continuous rewrite`
+- Commit: `4c3eabb` — `checkpoint: stabilize sandbox baseline v0.2`
+- Tag: `prototype-v0.2` (annotated)
 - Test: Çiz → Onayla → Bölge seç → 1-3 top yerleştir → Başlat → Durdur → Sıfırla döngüsü crash-free.
-
-### Riskler
-- `FindObjectsByType` performans: 50+ topta O(n) ama `OnReset` tek seferlik, sorun yok.
 
 ---
 
-## Faz 2 — Continuous Motion Core (**ana iş**)
+## ✅ Intermediate UX Pass — Spawn UX + Pause Semantics (kod yazıldı, commit bekliyor)
+
+**Amaç:** Discrete sistem hâlâ yerindeyken spawn akışını ayırt edilebilir hâle getir ve pause davranışını "anlık donma" yerine "bir sonraki güvenli köşede dur" yap. **Bu continuous rewrite DEĞİL**, ara katman. Continuous geldiğinde büyük kısmı çöpe gidecek.
+
+### Yapılanlar
+- `GameManager`: `SpawnPhase { CornerPick, DirectionPick }` alt-state; `occupiedCorners`; halo görselleri (prefab reuse, yeni sınıf yok); `pauseRequested` + `ballsAwaitingStop` orchestration; `OnBallStoppedAtCorner` callback + Reset guard'ları.
+- `BallController`: `pauseAtNextCorner` flag + `RequestPauseAtNextCorner()` + `OnStoppedAtCorner` event + `IsPaused` getter.
+- `UIManager`: yönerge iki fazlı + "DURDURULUYOR…" stateLabel.
+- `GridManager`: **dokunulmadı**.
+
+### Kısıtlar (korunarak uygulandı)
+- Yeni GameState YOK.
+- Yeni C# sınıfı YOK.
+- Yeni sprite asset YOK (dirIndicatorPrefab runtime'da reuse edildi).
+- Commit YOK.
+
+---
+
+## Faz 2 — Continuous Motion Core (**ana iş — sıradaki**)
 
 **Amaç:** Discrete step-based hareketi tamamen sürekli (`Vector2` pos + vel + swept collision) modelle değiştir.
 
@@ -207,7 +223,8 @@ public struct Hit { public float toi; public Vector2 normal; }
 
 ## Karar Bekleyen Noktalar (kullanıcı onayı)
 
-- [ ] Faz 1 stabilizasyonu için tek commit mi, yoksa her görevde ayrı mı?
+- [x] ~~Faz 1 stabilizasyonu için tek commit mi?~~ → Tek commit + tag (`prototype-v0.2`).
+- [ ] Intermediate UX pass için manuel test sonrası commit + yeni tag (`prototype-v0.3`?) mu, yoksa continuous rewrite ile birleştir mi?
 - [ ] `BallController.cs` Faz 2'de fiziksel silinsin mi yoksa deprecated bırakılıp sonra mı silinsin?
 - [ ] URP Post-Processing setup — Faz 3 gerekli mi yoksa opsiyonel mi?
 - [ ] `SimulationConfig` Faz 2'de mi, Faz 4'te mi? (Hard-coded değerler Faz 2'de yeterli olabilir.)
