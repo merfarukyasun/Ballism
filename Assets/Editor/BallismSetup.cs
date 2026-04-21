@@ -194,6 +194,9 @@ public class BallismSetup : EditorWindow
         if (uiMgr == null)
             uiMgr = uiMgrGO.AddComponent<UIManager>();
 
+        // Önceki Ballism UI nesnelerini temizle — Setup Scene tekrar çalıştırma güvenliği
+        CleanupExistingBallismUI(canvasGO.transform);
+
         // Sağ panel
         RectTransform panel = CreateUIPanel(canvasGO.transform, "Panel",
             new Vector2(200, 460), new Vector2(1f, 0.5f), new Vector2(1f, 0.5f),
@@ -228,6 +231,51 @@ public class BallismSetup : EditorWindow
         Debug.Log("[BallismSetup] Kurulum tamamlandı. Sahneyi Ctrl+S ile kaydet.");
         EditorUtility.DisplayDialog("Ballism Setup",
             "Kurulum tamamlandı!\nSahneyi Ctrl+S ile kaydetmeyi unutma.", "Tamam");
+    }
+
+    // -----------------------------------------------------------------------
+    /// <summary>
+    /// Canvas altındaki Ballism tarafından oluşturulmuş UI nesnelerini temizler.
+    /// Yalnızca isim + component + bilinen child kontrolüyle hedeflenir — agresif değil.
+    /// İleride eklenen başka Panel / Label objeleri dokunulmaz.
+    /// </summary>
+    static void CleanupExistingBallismUI(Transform canvasTransform)
+    {
+        for (int i = canvasTransform.childCount - 1; i >= 0; i--)
+        {
+            var child = canvasTransform.GetChild(i);
+
+            // Ballism sağ paneli:
+            //   • ad == "Panel"
+            //   • Image component'i var (panel arka planı)
+            //   • Ballism'e özgü child'lardan en az biri mevcut (BtnConfirm veya LblState)
+            if (child.name == "Panel"
+                && child.GetComponent<Image>() != null
+                && (child.Find("BtnConfirm") != null || child.Find("LblState") != null))
+            {
+                Object.DestroyImmediate(child.gameObject);
+                continue;
+            }
+
+            // Ballism alt yönerge etiketi:
+            //   • ad == "LblInstruction"
+            //   • TextMeshProUGUI component'i var
+            //   • Tam-genişlik alt-anchor: anchorMin=(0,0), anchorMax=(1,0)
+            if (child.name == "LblInstruction")
+            {
+                var rt  = child.GetComponent<RectTransform>();
+                var tmp = child.GetComponent<TextMeshProUGUI>();
+                if (tmp != null && rt != null
+                    && Mathf.Approximately(rt.anchorMin.x, 0f)
+                    && Mathf.Approximately(rt.anchorMax.x, 1f)
+                    && Mathf.Approximately(rt.anchorMin.y, 0f)
+                    && Mathf.Approximately(rt.anchorMax.y, 0f))
+                {
+                    Object.DestroyImmediate(child.gameObject);
+                    continue;
+                }
+            }
+        }
     }
 
     // -----------------------------------------------------------------------

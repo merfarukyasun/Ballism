@@ -16,7 +16,6 @@ public class BallController : MonoBehaviour
     // -----------------------------------------------------------------------
     [Header("Simülasyon")]
     public float speed    = 4f;
-    public int   maxSteps = 200;
 
     // -----------------------------------------------------------------------
     // Hareket — her iki mod için ortak
@@ -27,7 +26,6 @@ public class BallController : MonoBehaviour
     float      stepDur;
     bool       moving;
     bool       paused;
-    int        stepCount;
 
     // -----------------------------------------------------------------------
     // Hücre modu
@@ -82,7 +80,6 @@ public class BallController : MonoBehaviour
         t          = 0f;
         moving     = true;
         paused     = false;
-        stepCount  = 0;
 
         SetupVisuals(color);
 
@@ -112,7 +109,6 @@ public class BallController : MonoBehaviour
         t          = 0f;
         moving     = true;
         paused     = false;
-        stepCount  = 0;
 
         SetupVisuals(color);
 
@@ -186,29 +182,26 @@ public class BallController : MonoBehaviour
 
     void ResolveDirection()
     {
-        stepCount++;
-        if (stepCount > maxSteps)
-        {
-            Debug.LogWarning($"[Ball] ⚠ Step limiti ({maxSteps}) — durduruluyor.");
-            moving = false;
-            return;
-        }
+        // stepCount guard KALDIRILDI: ResolveDirection Update'te frame başına en fazla bir kez
+        // çağrılır — sonsuz döngü riski yok. Eski sayaç topun yaşam süresi sonunda yanlışlıkla
+        // durduruyordu (200 adım ≈ 50 sn @ speed=4). Dead-end koruması aşağıdaki "sıkışık" bloğu.
 
-        Vector2Int target = gridPos + dir;
         var (newDir, bounceType) = GridManager.Instance.Bounce(gridPos, dir);
 
-        Debug.Log($"[Ball] #{stepCount:D3} Hücre:{gridPos} {BounceLabel(bounceType)} Yön:{dir}→{newDir}");
+        // Sadece gerçek bounce'larda log — Free hareketlerde konsol spam'i önle
+        if (bounceType != BounceType.Free)
+            Debug.Log($"[Ball] Hücre:{gridPos} {BounceLabel(bounceType)} Yön:{dir}→{newDir}");
         dir = newDir;
 
         Vector2Int next = gridPos + dir;
         if (GridManager.Instance.IsSelected(next.x, next.y)) return;
 
-        Debug.LogWarning($"[Ball] #{stepCount} Bounce sonrası {next} geçersiz — tam geri.");
+        Debug.LogWarning($"[Ball] Bounce sonrası {next} geçersiz — tam geri.");
         dir  = -dir;
         next = gridPos + dir;
         if (GridManager.Instance.IsSelected(next.x, next.y)) return;
 
-        Debug.LogWarning($"[Ball] #{stepCount} Sıkışık — durduruluyor.");
+        Debug.LogWarning($"[Ball] Sıkışık — durduruluyor.");
         moving = false;
     }
 
@@ -218,17 +211,14 @@ public class BallController : MonoBehaviour
 
     void ResolveDirectionCorner()
     {
-        stepCount++;
-        if (stepCount > maxSteps)
-        {
-            Debug.LogWarning($"[Ball] ⚠ Step limiti ({maxSteps}) — durduruluyor.");
-            moving = false;
-            return;
-        }
+        // stepCount guard KALDIRILDI: aynı gerekçe — frame başına en fazla bir çağrı,
+        // döngü riski yok, 200 adım limiti topları 50 sn'de öldürüyordu.
 
         var (newDir, bounceType) = GridManager.Instance.BounceFromCorner(cornerPos, dir);
 
-        Debug.Log($"[Ball] #{stepCount:D3} Köşe:{cornerPos} {BounceLabel(bounceType)} Yön:{dir}→{newDir}");
+        // Sadece gerçek bounce'larda log — Free hareketlerde konsol spam'i önle
+        if (bounceType != BounceType.Free)
+            Debug.Log($"[Ball] Köşe:{cornerPos} {BounceLabel(bounceType)} Yön:{dir}→{newDir}");
         dir = newDir;
 
         // Güvenlik: yeni yönün traversal hücresi seçili mi?
@@ -236,13 +226,13 @@ public class BallController : MonoBehaviour
         int ty = dir.y > 0 ? cornerPos.y : cornerPos.y - 1;
         if (GridManager.Instance.IsSelected(tx, ty)) return;
 
-        Debug.LogWarning($"[Ball] #{stepCount} Traversal ({tx},{ty}) geçersiz — tam geri.");
+        Debug.LogWarning($"[Ball] Traversal ({tx},{ty}) geçersiz — tam geri.");
         dir = -dir;
         tx  = dir.x > 0 ? cornerPos.x : cornerPos.x - 1;
         ty  = dir.y > 0 ? cornerPos.y : cornerPos.y - 1;
         if (GridManager.Instance.IsSelected(tx, ty)) return;
 
-        Debug.LogWarning($"[Ball] #{stepCount} Sıkışık köşe — durduruluyor.");
+        Debug.LogWarning($"[Ball] Sıkışık köşe — durduruluyor.");
         moving = false;
     }
 
